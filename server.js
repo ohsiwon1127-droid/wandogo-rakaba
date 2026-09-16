@@ -14,13 +14,14 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SIGNUP_CODE = process.env.ADMIN_SIGNUP_CODE || '';
 const MONGODB_URI = process.env.MONGODB_URI || '';
+const MONGODB_DB = process.env.MONGODB_DB || '';
 const DATA_FILE = path.join(__dirname, 'data', 'users.json');
 
 const BET_MS = 15000;      // 베팅 시간 (조금 늘림)
 const REVEAL_MS = 8000;
 const DECKS = 8;
 const START_BALANCE = 0;   // 가입 축하 칩 없음 - 관리자 승인/충전 필요
-const HISTORY_LIMIT = 48;  // 경기 기록 동그라미 최대 개수
+const HISTORY_LIMIT = 44;  // 경기 기록 동그라미 최대 개수
 const CHIP = '칩';
 const ODDS = { player: 1, banker: 0.95, tie: 8, playerPair: 11, bankerPair: 11 };
 
@@ -53,30 +54,27 @@ let users = {}; // usernameLower -> { username, passwordHash, balance, isAdmin, 
 
 async function initPersistence() {
   if (MONGODB_URI) {
-    const client = new MongoClient(MONGODB_URI);
+    const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 30000, connectTimeoutMS: 30000 });
     await client.connect();
-    db = client.db(); // 연결 문자열에 db 이름이 없으면 기본 db 사용
+    db = MONGODB_DB ? client.db(MONGODB_DB) : client.db();
     usersCollection = db.collection('users');
     const docs = await usersCollection.find({}).toArray();
     for (const doc of docs) {
-      users[doc._id] = {
-        username: doc.username, passwordHash: doc.passwordHash, balance: doc.balance,
-        isAdmin: doc.isAdmin, status: doc.status || 'approved', createdAt: doc.createdAt,
+      const username = String(doc.username || doc._id || '').trim();
+      if (!username) continue;
+      const usernameLower = username.toLowerCase();
+      users[usernameLower] = {
+        username,
+        passwordHash: doc.passwordHash || '',
+        balance: Number.isFinite(Number(doc.balance)) ? Number(doc.balance) : 0,
+        isAdmin: !!doc.isAdmin,
+        status: doc.status || 'approved',
+        createdAt: doc.createdAt || Date.now(),
       };
     }
-    console.log(`[DB] MongoDB 연결 완료, 실제 사용 db 이름: "${db.databaseName}", 유저 ${docs.length}명 로드`);
-
-    // 쓰기 권한이 실제로 있는지 시작할 때 바로 테스트
-    try {
-      await usersCollection.updateOne(
-        { _id: '__write_test__' },
-        { $set: { checkedAt: new Date() } },
-        { upsert: true }
-      );
-      console.log('[DB] 쓰기 권한 테스트 성공 (users 컬렉션에 __write_test__ 문서 기록됨)');
-    } catch (e) {
-      console.error('[DB] 쓰기 권한 테스트 실패! DB 유저 권한을 확인하세요 ->', e.message);
-    }
+    console.log(`[DB] database=${db.databaseName}, collection=users`);
+    console.log(`[DB] MongoDB 연결 완료, 유저 ${Object.keys(users).length}명 로드`);
+    console.log('[DB] 불러온 회원:', Object.values(users).map(u => ({ username: u.username, balance: u.balance, status: u.status, isAdmin: u.isAdmin })));
   } else {
     users = fileLoadAll();
   }
@@ -84,21 +82,17 @@ async function initPersistence() {
 
 async function persistUser(usernameLower) {
   const u = users[usernameLower];
-  if (!u) {
-    console.warn(`[DB] persistUser("${usernameLower}") 호출됐지만 메모리에 해당 유저가 없음`);
-    return;
-  }
+  if (!u) return;
   if (usersCollection) {
-    console.log(`[DB] 저장 시도: ${usernameLower} (balance=${u.balance}, status=${u.status})`);
     try {
-      const result = await usersCollection.updateOne(
+      await usersCollection.updateOne(
         { _id: usernameLower },
         { $set: { username: u.username, passwordHash: u.passwordHash, balance: u.balance, isAdmin: u.isAdmin, status: u.status, createdAt: u.createdAt } },
         { upsert: true }
       );
-      console.log(`[DB] 저장 성공: ${usernameLower} (matched=${result.matchedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount})`);
     } catch (e) {
-      console.error(`[DB] 저장 실패: ${usernameLower} ->`, e.message);
+      console.error(`[DB] 저장 실패 (${usernameLower}):`, e.message);
+      throw e;
     }
   } else {
     fileSaveAll();
@@ -319,7 +313,12 @@ app.post('/api/signup', async (req, res) => {
   const status = isAdmin ? 'approved' : 'pending';
   const user = { username, passwordHash, balance: START_BALANCE, isAdmin, status, createdAt: Date.now() };
   users[username.toLowerCase()] = user;
-  await persistUser(username.toLowerCase());
+  try {
+    await persistUser(username.toLowerCase());
+  } catch (e) {
+    delete users[username.toLowerCase()];
+    return res.status(500).json({ error: '회원 정보를 DB에 저장하지 못했습니다.' });
+  }
 
   if (status === 'pending') {
     return res.json({ pending: true, message: '가입 신청이 완료되었습니다. 관리자 승인 후 로그인할 수 있어요.' });
@@ -353,8 +352,14 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
 app.post('/api/admin/approve', requireAuth, requireAdmin, async (req, res) => {
   const target = findByUsername((req.body || {}).username || '');
   if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
+  const oldStatus = target.status;
   target.status = 'approved';
-  await persistUser(target.username.toLowerCase());
+  try {
+    await persistUser(target.username.toLowerCase());
+  } catch (e) {
+    target.status = oldStatus;
+    return res.status(500).json({ error: 'DB 저장에 실패했습니다.' });
+  }
   res.json({ username: target.username, status: target.status });
 });
 
@@ -366,6 +371,30 @@ app.post('/api/admin/reject', requireAuth, requireAdmin, async (req, res) => {
   if (usersCollection) { try { await usersCollection.deleteOne({ _id: usernameLower }); } catch (e) {} }
   else fileSaveAll();
   res.json({ username: target.username, deleted: true });
+});
+
+// 관리자 전용: 승인된 회원 삭제
+app.post('/api/admin/delete-user', requireAuth, requireAdmin, async (req, res) => {
+  const usernameLower = String((req.body || {}).username || '').trim().toLowerCase();
+  if (!usernameLower) return res.status(400).json({ error: '삭제할 아이디를 입력하세요.' });
+  if (usernameLower === String(req.user.username).toLowerCase()) {
+    return res.status(400).json({ error: '현재 로그인한 관리자 계정은 삭제할 수 없습니다.' });
+  }
+  const target = users[usernameLower];
+  if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
+  try {
+    delete users[usernameLower];
+    if (usersCollection) {
+      await usersCollection.deleteOne({ _id: usernameLower });
+    } else {
+      fileSaveAll();
+    }
+    res.json({ username: target.username, deleted: true });
+  } catch (e) {
+    users[usernameLower] = target;
+    console.error(`[DB] 회원 삭제 실패 (${usernameLower}):`, e.message);
+    res.status(500).json({ error: '회원 삭제에 실패했습니다.' });
+  }
 });
 
 // 충전/차감 겸용: amount가 양수면 충전, 음수면 차감 (잘못 충전했을 때 되돌리는 용도)
@@ -381,8 +410,14 @@ app.post('/api/admin/recharge', requireAuth, requireAdmin, async (req, res) => {
   if (newBalance < 0) {
     return res.status(400).json({ error: `차감 후 잔액이 음수가 됩니다. (현재 ${target.balance.toLocaleString('en-US')}${CHIP})` });
   }
+  const oldBalance = target.balance;
   target.balance = newBalance;
-  await persistUser(target.username.toLowerCase());
+  try {
+    await persistUser(target.username.toLowerCase());
+  } catch (e) {
+    target.balance = oldBalance;
+    return res.status(500).json({ error: 'DB 저장에 실패했습니다. 칩 조정이 취소되었습니다.' });
+  }
   pushBalance(target.username);
   res.json({ username: target.username, balance: target.balance });
 });
