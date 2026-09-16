@@ -56,8 +56,11 @@
   .quick-btn:hover{ border-color:var(--gold); color:var(--gold-soft); }
   .quick-btn.sub{ color:var(--red); }
   .quick-btn.sub:hover{ border-color:var(--red); }
-  .delete-btn{ border:1px solid var(--red); background:transparent; color:var(--red); border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; margin-left:3px; }
-  .delete-btn:hover{ background:rgba(201,138,144,0.15); }
+  .status-tag{ font-size:11px; padding:2px 8px; border-radius:999px; }
+  .status-tag.approved{ background:rgba(141,226,156,0.15); color:var(--green); }
+  .status-tag.pending{ background:rgba(230,198,92,0.15); color:var(--gold-soft); }
+  .delete-btn{ border:1px solid var(--red); background:transparent; color:var(--red); border-radius:6px; padding:4px 10px; font-size:11px; cursor:pointer; }
+  .delete-btn:hover{ background:rgba(201,138,144,0.12); }
 
   .msg{ font-size:12.5px; margin-top:10px; min-height:16px; }
   .msg.ok{ color:var(--green); }
@@ -116,7 +119,7 @@
     </div>
     <table>
       <thead>
-        <tr><th>아이디</th><th>보유 칩</th><th>가입일</th><th>빠른 조정</th></tr>
+        <tr><th>아이디</th><th>상태</th><th>보유 칩</th><th>가입일</th><th>빠른 조정</th><th></th></tr>
       </thead>
       <tbody id="user-table-body"></tbody>
     </table>
@@ -178,14 +181,14 @@
   function renderUsers(filter){
     const body = document.getElementById('user-table-body');
     const dataList = document.getElementById('user-list');
-    const approved = users.filter(u => u.status !== 'pending' && !u.isAdmin);
-    dataList.innerHTML = approved.map(u => `<option value="${u.username}">`).join('');
+    dataList.innerHTML = users.map(u => `<option value="${u.username}">`).join('');
 
     const f = (filter || '').toLowerCase();
-    const filtered = approved.filter(u => u.username.toLowerCase().includes(f));
+    const filtered = users.filter(u => u.username.toLowerCase().includes(f));
     body.innerHTML = filtered.map(u => `
       <tr class="${u.isAdmin ? 'admin-row' : ''}">
         <td>${u.username}${u.isAdmin ? ' 👑' : ''}</td>
+        <td><span class="status-tag ${u.status}">${u.status === 'approved' ? '승인됨' : '대기중'}</span></td>
         <td class="balance-cell">${fmtChip(u.balance)}</td>
         <td>${fmtDate(u.createdAt)}</td>
         <td>
@@ -193,8 +196,8 @@
           <button class="quick-btn" data-user="${u.username}" data-amt="500">+500</button>
           <button class="quick-btn sub" data-user="${u.username}" data-amt="-100">-100</button>
           <button class="quick-btn sub" data-user="${u.username}" data-amt="-500">-500</button>
-          ${!u.isAdmin ? `<button class="delete-btn" data-user="${u.username}">삭제</button>` : ''}
         </td>
+        <td><button class="delete-btn" data-user="${u.username}">삭제</button></td>
       </tr>
     `).join('');
 
@@ -204,6 +207,12 @@
     body.querySelectorAll('.delete-btn').forEach(btn => {
       btn.addEventListener('click', () => deleteUser(btn.dataset.user));
     });
+  }
+
+  async function deleteUser(username){
+    if(!confirm(`${username} 계정을 완전히 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    await authedFetch('/api/admin/reject', { method:'POST', body: JSON.stringify({ username }) });
+    loadUsers();
   }
 
   async function loadUsers(){
@@ -226,19 +235,6 @@
     if(!confirm(`${username} 님의 가입 신청을 거부(삭제)할까요?`)) return;
     await authedFetch('/api/admin/reject', { method:'POST', body: JSON.stringify({ username }) });
     loadUsers();
-  }
-
-  async function deleteUser(username){
-    if(!confirm(`${username} 회원을 정말 삭제할까요?\n\n삭제하면 해당 회원의 계정과 보유 칩 기록이 DB에서 삭제됩니다.`)) return;
-    try{
-      const r = await authedFetch('/api/admin/delete-user', { method:'POST', body: JSON.stringify({ username }) });
-      const data = await r.json();
-      if(!r.ok){ alert(data.error || '회원 삭제에 실패했습니다.'); return; }
-      alert(`${data.username} 회원이 삭제되었습니다.`);
-      loadUsers();
-    }catch(e){
-      alert('서버에 연결할 수 없습니다.');
-    }
   }
 
   async function doRecharge(username, amount){
