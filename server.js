@@ -20,7 +20,7 @@ const BET_MS = 15000;      // 베팅 시간 (조금 늘림)
 const REVEAL_MS = 8000;
 const DECKS = 8;
 const START_BALANCE = 0;   // 가입 축하 칩 없음 - 관리자 승인/충전 필요
-const HISTORY_LIMIT = 44;  // 경기 기록 동그라미 최대 개수
+const HISTORY_LIMIT = 48;  // 경기 기록 동그라미 최대 개수
 const CHIP = '칩';
 const ODDS = { player: 1, banker: 0.95, tie: 8, playerPair: 11, bankerPair: 11 };
 
