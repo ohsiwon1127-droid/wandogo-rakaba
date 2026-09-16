@@ -14,16 +14,15 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SIGNUP_CODE = process.env.ADMIN_SIGNUP_CODE || '';
 const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || '';
 const DATA_FILE = path.join(__dirname, 'data', 'users.json');
 
 const BET_MS = 15000;      // 베팅 시간 (조금 늘림)
 const REVEAL_MS = 8000;
 const DECKS = 8;
 const START_BALANCE = 0;   // 가입 축하 칩 없음 - 관리자 승인/충전 필요
-const HISTORY_LIMIT = 44;  // 경기 기록 동그라미 최대 개수
+const HISTORY_LIMIT = 48;  // 경기 기록 동그라미 최대 개수
 const CHIP = '칩';
-const ODDS = { player: 1, banker: 0.95, tie: 8, playerPair: 11, bankerPair: 11 };
+const ODDS = { player: 1, banker: 1, tie: 8, playerPair: 11, bankerPair: 11 };
 
 if (!process.env.JWT_SECRET) {
   console.warn('[경고] JWT_SECRET 환경변수가 없어 재시작마다 임시 키를 사용합니다. 배포 시 반드시 지정하세요.');
@@ -54,27 +53,30 @@ let users = {}; // usernameLower -> { username, passwordHash, balance, isAdmin, 
 
 async function initPersistence() {
   if (MONGODB_URI) {
-    const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 30000, connectTimeoutMS: 30000 });
+    const client = new MongoClient(MONGODB_URI);
     await client.connect();
-    db = MONGODB_DB ? client.db(MONGODB_DB) : client.db();
+    db = client.db(); // 연결 문자열에 db 이름이 없으면 기본 db 사용
     usersCollection = db.collection('users');
     const docs = await usersCollection.find({}).toArray();
     for (const doc of docs) {
-      const username = String(doc.username || doc._id || '').trim();
-      if (!username) continue;
-      const usernameLower = username.toLowerCase();
-      users[usernameLower] = {
-        username,
-        passwordHash: doc.passwordHash || '',
-        balance: Number.isFinite(Number(doc.balance)) ? Number(doc.balance) : 0,
-        isAdmin: !!doc.isAdmin,
-        status: doc.status || 'approved',
-        createdAt: doc.createdAt || Date.now(),
+      users[doc._id] = {
+        username: doc.username, passwordHash: doc.passwordHash, balance: doc.balance,
+        isAdmin: doc.isAdmin, status: doc.status || 'approved', createdAt: doc.createdAt,
       };
     }
-    console.log(`[DB] database=${db.databaseName}, collection=users`);
-    console.log(`[DB] MongoDB 연결 완료, 유저 ${Object.keys(users).length}명 로드`);
-    console.log('[DB] 불러온 회원:', Object.values(users).map(u => ({ username: u.username, balance: u.balance, status: u.status, isAdmin: u.isAdmin })));
+    console.log(`[DB] MongoDB 연결 완료, 실제 사용 db 이름: "${db.databaseName}", 유저 ${docs.length}명 로드`);
+
+    // 쓰기 권한이 실제로 있는지 시작할 때 바로 테스트
+    try {
+      await usersCollection.updateOne(
+        { _id: '__write_test__' },
+        { $set: { checkedAt: new Date() } },
+        { upsert: true }
+      );
+      console.log('[DB] 쓰기 권한 테스트 성공 (users 컬렉션에 __write_test__ 문서 기록됨)');
+    } catch (e) {
+      console.error('[DB] 쓰기 권한 테스트 실패! DB 유저 권한을 확인하세요 ->', e.message);
+    }
   } else {
     users = fileLoadAll();
   }
@@ -82,17 +84,21 @@ async function initPersistence() {
 
 async function persistUser(usernameLower) {
   const u = users[usernameLower];
-  if (!u) return;
+  if (!u) {
+    console.warn(`[DB] persistUser("${usernameLower}") 호출됐지만 메모리에 해당 유저가 없음`);
+    return;
+  }
   if (usersCollection) {
+    console.log(`[DB] 저장 시도: ${usernameLower} (balance=${u.balance}, status=${u.status})`);
     try {
-      await usersCollection.updateOne(
+      const result = await usersCollection.updateOne(
         { _id: usernameLower },
         { $set: { username: u.username, passwordHash: u.passwordHash, balance: u.balance, isAdmin: u.isAdmin, status: u.status, createdAt: u.createdAt } },
         { upsert: true }
       );
+      console.log(`[DB] 저장 성공: ${usernameLower} (matched=${result.matchedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount})`);
     } catch (e) {
-      console.error(`[DB] 저장 실패 (${usernameLower}):`, e.message);
-      throw e;
+      console.error(`[DB] 저장 실패: ${usernameLower} ->`, e.message);
     }
   } else {
     fileSaveAll();
@@ -139,12 +145,14 @@ function total(cards) {
   return cards.reduce((sum, c) => sum + cardValue(c.rank), 0) % 10;
 }
 function bankerShouldDraw(bankerTotal, playerThird) {
+  // 플레이어가 세번째 카드를 받지 않은 경우(스탠드, 6~7) 뱅커는 0~5일 때 무조건 드로우, 6~7이면 스탠드
+  if (playerThird === null) return bankerTotal <= 5;
   if (bankerTotal <= 2) return true;
-  if (bankerTotal === 3) return playerThird === null || playerThird !== 8;
-  if (bankerTotal === 4) return playerThird !== null && playerThird >= 2 && playerThird <= 7;
-  if (bankerTotal === 5) return playerThird !== null && playerThird >= 4 && playerThird <= 7;
-  if (bankerTotal === 6) return playerThird !== null && (playerThird === 6 || playerThird === 7);
-  return false;
+  if (bankerTotal === 3) return playerThird !== 8;
+  if (bankerTotal === 4) return playerThird >= 2 && playerThird <= 7;
+  if (bankerTotal === 5) return playerThird >= 4 && playerThird <= 7;
+  if (bankerTotal === 6) return playerThird === 6 || playerThird === 7;
+  return false; // 7이면 스탠드
 }
 function computeRound() {
   const shoe = buildShoe();
@@ -182,7 +190,7 @@ function settleBet(bet, round) {
       if (round.outcome === 'player') payout += m.amount * 2;
       else if (round.outcome === 'tie') payout += m.amount;
     } else if (m.side === 'banker') {
-      if (round.outcome === 'banker') payout += m.amount + Math.floor(m.amount * 0.95);
+      if (round.outcome === 'banker') payout += m.amount * 2;
       else if (round.outcome === 'tie') payout += m.amount;
     } else if (m.side === 'tie') {
       if (round.outcome === 'tie') payout += m.amount * (1 + ODDS.tie);
@@ -313,12 +321,7 @@ app.post('/api/signup', async (req, res) => {
   const status = isAdmin ? 'approved' : 'pending';
   const user = { username, passwordHash, balance: START_BALANCE, isAdmin, status, createdAt: Date.now() };
   users[username.toLowerCase()] = user;
-  try {
-    await persistUser(username.toLowerCase());
-  } catch (e) {
-    delete users[username.toLowerCase()];
-    return res.status(500).json({ error: '회원 정보를 DB에 저장하지 못했습니다.' });
-  }
+  await persistUser(username.toLowerCase());
 
   if (status === 'pending') {
     return res.json({ pending: true, message: '가입 신청이 완료되었습니다. 관리자 승인 후 로그인할 수 있어요.' });
@@ -352,14 +355,8 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
 app.post('/api/admin/approve', requireAuth, requireAdmin, async (req, res) => {
   const target = findByUsername((req.body || {}).username || '');
   if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
-  const oldStatus = target.status;
   target.status = 'approved';
-  try {
-    await persistUser(target.username.toLowerCase());
-  } catch (e) {
-    target.status = oldStatus;
-    return res.status(500).json({ error: 'DB 저장에 실패했습니다.' });
-  }
+  await persistUser(target.username.toLowerCase());
   res.json({ username: target.username, status: target.status });
 });
 
@@ -371,30 +368,6 @@ app.post('/api/admin/reject', requireAuth, requireAdmin, async (req, res) => {
   if (usersCollection) { try { await usersCollection.deleteOne({ _id: usernameLower }); } catch (e) {} }
   else fileSaveAll();
   res.json({ username: target.username, deleted: true });
-});
-
-// 관리자 전용: 승인된 회원 삭제
-app.post('/api/admin/delete-user', requireAuth, requireAdmin, async (req, res) => {
-  const usernameLower = String((req.body || {}).username || '').trim().toLowerCase();
-  if (!usernameLower) return res.status(400).json({ error: '삭제할 아이디를 입력하세요.' });
-  if (usernameLower === String(req.user.username).toLowerCase()) {
-    return res.status(400).json({ error: '현재 로그인한 관리자 계정은 삭제할 수 없습니다.' });
-  }
-  const target = users[usernameLower];
-  if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
-  try {
-    delete users[usernameLower];
-    if (usersCollection) {
-      await usersCollection.deleteOne({ _id: usernameLower });
-    } else {
-      fileSaveAll();
-    }
-    res.json({ username: target.username, deleted: true });
-  } catch (e) {
-    users[usernameLower] = target;
-    console.error(`[DB] 회원 삭제 실패 (${usernameLower}):`, e.message);
-    res.status(500).json({ error: '회원 삭제에 실패했습니다.' });
-  }
 });
 
 // 충전/차감 겸용: amount가 양수면 충전, 음수면 차감 (잘못 충전했을 때 되돌리는 용도)
@@ -410,14 +383,8 @@ app.post('/api/admin/recharge', requireAuth, requireAdmin, async (req, res) => {
   if (newBalance < 0) {
     return res.status(400).json({ error: `차감 후 잔액이 음수가 됩니다. (현재 ${target.balance.toLocaleString('en-US')}${CHIP})` });
   }
-  const oldBalance = target.balance;
   target.balance = newBalance;
-  try {
-    await persistUser(target.username.toLowerCase());
-  } catch (e) {
-    target.balance = oldBalance;
-    return res.status(500).json({ error: 'DB 저장에 실패했습니다. 칩 조정이 취소되었습니다.' });
-  }
+  await persistUser(target.username.toLowerCase());
   pushBalance(target.username);
   res.json({ username: target.username, balance: target.balance });
 });
