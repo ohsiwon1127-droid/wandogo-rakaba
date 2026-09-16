@@ -20,7 +20,7 @@ const BET_MS = 15000;      // 베팅 시간 (조금 늘림)
 const REVEAL_MS = 8000;
 const DECKS = 8;
 const START_BALANCE = 0;   // 가입 축하 칩 없음 - 관리자 승인/충전 필요
-const HISTORY_LIMIT = 48;  // 경기 기록 동그라미 최대 개수
+const HISTORY_LIMIT = 44;  // 경기 기록 동그라미 최대 개수
 const CHIP = '칩';
 const ODDS = { player: 1, banker: 0.95, tie: 8, playerPair: 11, bankerPair: 11 };
 
@@ -53,30 +53,29 @@ let users = {}; // usernameLower -> { username, passwordHash, balance, isAdmin, 
 
 async function initPersistence() {
   if (MONGODB_URI) {
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    db = client.db(); // 연결 문자열에 db 이름이 없으면 기본 db 사용
+    usersCollection = db.collection('users');
+    const docs = await usersCollection.find({}).toArray();
+    for (const doc of docs) {
+      users[doc._id] = {
+        username: doc.username, passwordHash: doc.passwordHash, balance: doc.balance,
+        isAdmin: doc.isAdmin, status: doc.status || 'approved', createdAt: doc.createdAt,
+      };
+    }
+    console.log(`[DB] MongoDB 연결 완료, 실제 사용 db 이름: "${db.databaseName}", 유저 ${docs.length}명 로드`);
+
+    // 쓰기 권한이 실제로 있는지 시작할 때 바로 테스트
     try {
-      const client = new MongoClient(MONGODB_URI);
-      await client.connect();
-      // 연결 문자열에 DB 이름이 없으면 드라이버가 기본값(test)으로 조용히 연결해버려서
-      // Atlas 화면에서 다른 이름의 DB를 보고 있으면 "저장이 안 된다"고 착각하기 쉽습니다.
-      // 그래서 이름을 명시적으로 고정합니다. Atlas에서는 이 이름의 DB > users 컬렉션을 확인하세요.
-      const dbName = process.env.MONGODB_DB_NAME || 'baccarat';
-      db = client.db(dbName);
-      usersCollection = db.collection('users');
-      const docs = await usersCollection.find({}).toArray();
-      for (const doc of docs) {
-        users[doc._id] = {
-          username: doc.username, passwordHash: doc.passwordHash, balance: doc.balance,
-          isAdmin: doc.isAdmin, status: doc.status || 'approved', createdAt: doc.createdAt,
-        };
-      }
-      console.log(`[DB] MongoDB 연결 완료 (database: "${dbName}"), 유저 ${docs.length}명 로드`);
+      await usersCollection.updateOne(
+        { _id: '__write_test__' },
+        { $set: { checkedAt: new Date() } },
+        { upsert: true }
+      );
+      console.log('[DB] 쓰기 권한 테스트 성공 (users 컬렉션에 __write_test__ 문서 기록됨)');
     } catch (e) {
-      // 연결 실패 시 여기서 죽지 않고 파일 모드로 대체합니다.
-      // (원래 코드처럼 여기서 예외가 그대로 던져지면 초기화 Promise가 reject되어
-      //  서버 자체가 뜨지도 못하고 재시작을 반복할 수 있었습니다.)
-      console.error('[DB] MongoDB 연결 실패, 로컬 파일 모드로 대체합니다. 원인:', e.message);
-      usersCollection = null;
-      users = fileLoadAll();
+      console.error('[DB] 쓰기 권한 테스트 실패! DB 유저 권한을 확인하세요 ->', e.message);
     }
   } else {
     users = fileLoadAll();
@@ -85,15 +84,22 @@ async function initPersistence() {
 
 async function persistUser(usernameLower) {
   const u = users[usernameLower];
-  if (!u) return;
+  if (!u) {
+    console.warn(`[DB] persistUser("${usernameLower}") 호출됐지만 메모리에 해당 유저가 없음`);
+    return;
+  }
   if (usersCollection) {
+    console.log(`[DB] 저장 시도: ${usernameLower} (balance=${u.balance}, status=${u.status})`);
     try {
-      await usersCollection.updateOne(
+      const result = await usersCollection.updateOne(
         { _id: usernameLower },
         { $set: { username: u.username, passwordHash: u.passwordHash, balance: u.balance, isAdmin: u.isAdmin, status: u.status, createdAt: u.createdAt } },
         { upsert: true }
       );
-    } catch (e) { console.error('DB 저장 실패:', e.message); }
+      console.log(`[DB] 저장 성공: ${usernameLower} (matched=${result.matchedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount})`);
+    } catch (e) {
+      console.error(`[DB] 저장 실패: ${usernameLower} ->`, e.message);
+    }
   } else {
     fileSaveAll();
   }
@@ -140,11 +146,10 @@ function total(cards) {
 }
 function bankerShouldDraw(bankerTotal, playerThird) {
   if (bankerTotal <= 2) return true;
-  if (playerThird === null) return bankerTotal <= 5;
-  if (bankerTotal === 3) return playerThird !== 8;
-  if (bankerTotal === 4) return playerThird >= 2 && playerThird <= 7;
-  if (bankerTotal === 5) return playerThird >= 4 && playerThird <= 7;
-  if (bankerTotal === 6) return playerThird === 6 || playerThird === 7;
+  if (bankerTotal === 3) return playerThird === null || playerThird !== 8;
+  if (bankerTotal === 4) return playerThird !== null && playerThird >= 2 && playerThird <= 7;
+  if (bankerTotal === 5) return playerThird !== null && playerThird >= 4 && playerThird <= 7;
+  if (bankerTotal === 6) return playerThird !== null && (playerThird === 6 || playerThird === 7);
   return false;
 }
 function computeRound() {
