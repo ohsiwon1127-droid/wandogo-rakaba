@@ -1,3 +1,4 @@
+[Uploading README.md…]()
 # 카드 랩 · 라이브 바카라 테이블
 
 실시간 멀티플레이어 바카라 웹사이트입니다. **가상 칩 전용이며 실제 결제·환전 기능은 없습니다.**
@@ -54,16 +55,8 @@ Render 같은 무료 호스팅은 서버가 재시작/재배포될 때마다 디
 5. "Connect" → "Drivers"에서 연결 문자열(`mongodb+srv://...`) 복사
 6. 이 문자열을 `.env`(로컬) 또는 Render의 Environment 변수에 `MONGODB_URI` 라는 이름으로 등록
 
-`MONGODB_URI`가 설정되어 있으면 서버는 자동으로 DB를 사용하고, 시작 로그에 `[DB] MongoDB 연결 완료 (database: "baccarat")`가 찍힙니다. (연결 문자열에 DB 이름을 안 적어도 서버가 항상 "baccarat"이라는 이름을 씁니다 — Atlas의 Collections 화면에서 "baccarat" DB의 "users" 컬렉션을 보면 됩니다.)
-설정하지 않았거나 연결에 실패하면 로컬 `data/users.json` 파일을 쓰는데, 이 경우 Render 재배포/재시작 시 데이터가 사라질 수 있습니다. 이때는 로그에 `[경고] MONGODB_URI가 없어...` 또는 `[DB] MongoDB 연결 실패, 로컬 파일 모드로 대체합니다. 원인: ...` 가 찍힙니다.
-
-**"MongoDB를 연결했는데도 회원이 초기화된다"면 이 순서로 확인하세요.**
-1. Render 대시보드 → 해당 서비스 → **Logs**에서 서버가 막 켜졌을 때 뜨는 줄을 찾습니다.
-   - `[DB] MongoDB 연결 완료 (database: "baccarat")`가 보이면 → DB 연결 자체는 성공한 것이니 2번으로.
-   - `[경고] MONGODB_URI가 없어...`가 보이면 → 환경변수가 앱까지 전달되지 않은 것입니다. Environment 탭에서 변수 이름이 정확히 `MONGODB_URI`인지(대소문자까지) 확인하고 저장 후 Manual Deploy로 재배포하세요.
-   - `[DB] MongoDB 연결 실패, 로컬 파일 모드로 대체합니다. 원인: ...`가 보이면 → 그 원인 메시지를 그대로 확인하세요. 대부분 (a) Atlas Network Access에 `0.0.0.0/0`을 안 넣었거나 (b) 연결 문자열의 비밀번호가 틀렸거나 (c) 비밀번호에 `@`, `:`, `/` 같은 특수문자가 있는데 URL 인코딩을 안 한 경우입니다.
-2. MongoDB Atlas 웹사이트에서 왼쪽 메뉴 **Database → Browse Collections**로 들어가서, DB 목록에 `baccarat`이 있고 그 안에 `users` 컬렉션에 실제로 회원 문서가 쌓여 있는지 확인합니다. (다른 이름의 DB를 보고 있으면 데이터가 없어 보이는 게 당연합니다 — 지금 코드는 항상 `baccarat`이라는 이름을 씁니다.)
-3. 회원가입을 다시 한번 해보고, 위 Browse Collections 화면을 새로고침해서 방금 만든 계정이 바로 나타나는지 확인합니다. 나타나면 저장은 정상 동작 중인 것이고, 서버를 재시작(Render에서 Manual Deploy)해도 그 계정으로 로그인이 되는지 마지막으로 확인하세요.
+`MONGODB_URI`가 설정되어 있으면 서버는 자동으로 DB를 사용하고, 시작 로그에 `[DB] MongoDB 연결 완료`가 찍힙니다.
+설정하지 않으면 로컬 `data/users.json` 파일을 쓰는데, 이 경우 Render 재배포/재시작 시 데이터가 사라질 수 있습니다.
 
 ## 인터넷에 실제로 배포하기 (Render.com 예시)
 
