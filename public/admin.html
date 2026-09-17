@@ -218,7 +218,10 @@
   async function loadUsers(){
     const r = await authedFetch('/api/admin/users');
     if(!r.ok){
-      if(r.status === 403){ alert('관리자 권한이 없습니다.'); window.location.href = 'game.html'; }
+      if(r.status === 403){ alert('관리자 권한이 없습니다.'); window.location.href = 'game.html'; return; }
+      if(r.status === 401){ localStorage.removeItem('cardlab_token'); window.location.href = 'login.html'; return; }
+      document.getElementById('rc-msg').textContent = `유저 목록을 불러오지 못했습니다 (상태 코드 ${r.status})`;
+      document.getElementById('rc-msg').className = 'msg err';
       return;
     }
     const data = await r.json();
