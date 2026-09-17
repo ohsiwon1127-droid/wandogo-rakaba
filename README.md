@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/32312446/README.md)
+[Uploading README.md…]()
 # 카드 랩 · 라이브 바카라 테이블
 
 실시간 멀티플레이어 바카라 웹사이트입니다. **가상 칩 전용이며 실제 결제·환전 기능은 없습니다.**
