@@ -20,7 +20,7 @@ const BET_MS = 15000;      // 베팅 시간 (조금 늘림)
 const REVEAL_MS = 8000;
 const DECKS = 8;
 const START_BALANCE = 0;   // 가입 축하 칩 없음 - 관리자 승인/충전 필요
-const HISTORY_LIMIT = 48;  // 경기 기록 동그라미 최대 개수
+const HISTORY_LIMIT = 44;  // 경기 기록 동그라미 최대 개수
 const CHIP = '칩';
 const ODDS = { player: 1, banker: 1, tie: 8, playerPair: 11, bankerPair: 11 };
 
@@ -107,6 +107,20 @@ async function persistUser(usernameLower) {
 
 function findByUsername(username) {
   return users[String(username).toLowerCase()] || null;
+}
+
+// 이 인스턴스 메모리에 없어도 DB에 있으면 찾아서 메모리에 캐시해준다 (다중 인스턴스 대비)
+async function findByUsernameFresh(username) {
+  const lower = String(username).toLowerCase();
+  if (users[lower]) return users[lower];
+  if (usersCollection) {
+    const doc = await usersCollection.findOne({ _id: lower });
+    if (doc) {
+      users[lower] = { username: doc.username, passwordHash: doc.passwordHash, balance: doc.balance, isAdmin: doc.isAdmin, status: doc.status || 'approved', createdAt: doc.createdAt };
+      return users[lower];
+    }
+  }
+  return null;
 }
 
 // 배포 플랫폼이 재시작 신호를 보낼 때 파일 모드라면 마지막으로 한 번 더 저장
@@ -345,15 +359,25 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ username: req.user.username, isAdmin: req.user.isAdmin, balance: req.user.balance });
 });
 
-app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
-  const list = Object.values(users).map(u => ({
-    username: u.username, balance: u.balance, isAdmin: u.isAdmin, status: u.status, createdAt: u.createdAt,
-  })).sort((a, b) => a.username.localeCompare(b.username));
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  let list;
+  if (usersCollection) {
+    // 인스턴스가 여러 개 떠 있어도 항상 최신 상태를 보여주기 위해 메모리 캐시 대신 DB를 직접 조회
+    const docs = await usersCollection.find({ _id: { $ne: '__write_test__' } }).toArray();
+    list = docs.map(d => ({ username: d.username, balance: d.balance, isAdmin: d.isAdmin, status: d.status || 'approved', createdAt: d.createdAt }));
+    // 이 인스턴스의 메모리도 최신 상태로 맞춰둔다 (다음 로그인/소켓 연결 시 정확한 정보를 쓰도록)
+    for (const d of docs) {
+      users[d._id] = { username: d.username, passwordHash: d.passwordHash, balance: d.balance, isAdmin: d.isAdmin, status: d.status || 'approved', createdAt: d.createdAt };
+    }
+  } else {
+    list = Object.values(users).map(u => ({ username: u.username, balance: u.balance, isAdmin: u.isAdmin, status: u.status, createdAt: u.createdAt }));
+  }
+  list.sort((a, b) => a.username.localeCompare(b.username));
   res.json({ users: list });
 });
 
 app.post('/api/admin/approve', requireAuth, requireAdmin, async (req, res) => {
-  const target = findByUsername((req.body || {}).username || '');
+  const target = await findByUsernameFresh((req.body || {}).username || '');
   if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
   target.status = 'approved';
   await persistUser(target.username.toLowerCase());
@@ -362,7 +386,7 @@ app.post('/api/admin/approve', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/api/admin/reject', requireAuth, requireAdmin, async (req, res) => {
   const usernameLower = String((req.body || {}).username || '').toLowerCase();
-  const target = users[usernameLower];
+  const target = await findByUsernameFresh(usernameLower);
   if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
   delete users[usernameLower];
   if (usersCollection) { try { await usersCollection.deleteOne({ _id: usernameLower }); } catch (e) {} }
@@ -373,7 +397,7 @@ app.post('/api/admin/reject', requireAuth, requireAdmin, async (req, res) => {
 // 충전/차감 겸용: amount가 양수면 충전, 음수면 차감 (잘못 충전했을 때 되돌리는 용도)
 app.post('/api/admin/recharge', requireAuth, requireAdmin, async (req, res) => {
   const { username, amount } = req.body || {};
-  const target = findByUsername(username || '');
+  const target = await findByUsernameFresh(username || '');
   const amt = Math.trunc(Number(amount));
   if (!target) return res.status(404).json({ error: '해당 유저를 찾을 수 없습니다.' });
   if (!Number.isFinite(amt) || amt === 0 || Math.abs(amt) > 1000000) {
